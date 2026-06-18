@@ -1,0 +1,31 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "Compilar detector_facial",
+      "type": "shell",
+      "command": "C:/msys64/mingw64/bin/g++.exe",
+      "args": [
+        "-std=c++17",
+        "${workspaceFolder}/detector_facial.cpp",
+        "-o",
+        "${workspaceFolder}/detector_facial.exe",
+        "-I", "C:/msys64/mingw64/include/opencv4",
+        "-L", "C:/msys64/mingw64/lib",
+        "-lopencv_core",
+        "-lopencv_highgui",
+        "-lopencv_imgproc",
+        "-lopencv_objdetect",
+        "-lopencv_videoio",
+        "-lopencv_imgcodecs"
+      ],
+      "options": {
+        "env": {
+          "PATH": "C:/msys64/mingw64/bin;${env:PATH}"
+        }
+      },
+      "group": { "kind": "build", "isDefault": true },
+      "problemMatcher": ["$gcc"]
+    }
+  ]
+}

@@ -1,0 +1,23 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "Rodar detector_facial",
+      "type": "cppdbg",
+      "request": "launch",
+      "program": "${workspaceFolder}/detector_facial.exe",
+      "args": [],
+      "cwd": "${workspaceFolder}",
+      "environment": [
+        {
+          "name": "PATH",
+          "value": "C:/msys64/mingw64/bin;${env:PATH}"
+        }
+      ],
+      "externalConsole": true,
+      "MIMode": "gdb",
+      "miDebuggerPath": "C:/msys64/mingw64/bin/gdb.exe",
+      "preLaunchTask": "Compilar detector_facial"
+    }
+  ]
+}
