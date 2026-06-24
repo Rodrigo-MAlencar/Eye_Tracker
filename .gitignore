@@ -1,0 +1,6 @@
+# Arquivos temporários do compilador
+*.o
+*.obj
+
+# Arquivos temporários do VS Code
+.vscode/ipch/
