@@ -17,7 +17,8 @@
         "-lopencv_imgproc",
         "-lopencv_objdetect",
         "-lopencv_videoio",
-        "-lopencv_imgcodecs"
+        "-lopencv_imgcodecs",
+        "-lshlwapi"
       ],
       "options": {
         "env": {
