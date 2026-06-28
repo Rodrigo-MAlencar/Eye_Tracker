@@ -1,49 +1,136 @@
 // ============================================================
-//  DETECTOR DE ROSTO E OLHOS — Versão Simples para Iniciantes
-// ============================================================
-//
-//  O que este programa faz:
-//    1. Abre a câmera do computador
-//    2. Detecta o rosto e desenha um RETÂNGULO VERDE em volta
-//    3. Dentro do rosto, detecta os olhos e desenha
-//       RETÂNGULOS AZUIS em volta de cada olho
-//    4. Tudo acompanha o movimento em tempo real
-//    5. Pressione ESC para fechar o programa
-//
-//  Dependência: OpenCV (biblioteca de visão computacional)
+//  DETECTOR DE ROSTO E OLHOS + CONTROLE DO MOUSE
 // ============================================================
 
-// -- Windows API: necessária para forçar o carregamento
-//    correto das DLLs da pasta do programa ------------------
 #include <windows.h>
 #include <shlwapi.h>
-
-// -- Biblioteca principal do OpenCV -------------------------
 #include <opencv2/opencv.hpp>
-
-// -- Módulo de detecção de objetos do OpenCV ----------------
 #include <opencv2/objdetect.hpp>
-
-// -- Recursos básicos do C++ --------------------------------
 #include <iostream>
+#include <deque>
+#include <numeric>
+#include <csignal>    // necessário para capturar Ctrl+C
+
 
 // ============================================================
-//  CONFIGURAÇÕES — altere aqui se precisar
+//  FLAG GLOBAL DE CONTROLE DO LOOP
+//
+//  Quando o usuário pressiona Ctrl+C ou fecha a janela,
+//  essa variável vira false e o loop principal encerra
+//  de forma limpa, liberando câmera e janelas.
+//
+//  "volatile" diz ao compilador que essa variável pode
+//  mudar a qualquer momento (pelo sinal do Ctrl+C),
+//  impedindo otimizações que ignorariam a mudança.
+// ============================================================
+volatile bool rodando = true;
+
+
+// ============================================================
+//  FUNÇÃO: aoReceberCtrlC
+//
+//  É chamada automaticamente pelo sistema operacional
+//  quando o usuário pressiona Ctrl+C.
+//  Apenas muda a flag para false — o loop principal
+//  detecta isso e encerra com limpeza.
+// ============================================================
+void aoReceberCtrlC(int)
+{
+    std::cout << "\n[INFO] Ctrl+C detectado. Encerrando..." << std::endl;
+    rodando = false;
+}
+
+
+// ============================================================
+//  CONFIGURAÇÕES
 // ============================================================
 
-// Índice da câmera: 0 = câmera padrão do notebook
-// Troque para 1 ou 2 se tiver mais de uma câmera conectada
 const int CAMERA_INDEX = 0;
 
-// Caminhos dos arquivos de detecção (XML)
-// Devem estar na mesma pasta que o .exe
 const std::string ARQUIVO_ROSTO = "haarcascade_frontalface_default.xml";
 const std::string ARQUIVO_OLHOS = "haarcascade_eye.xml";
 
-// Cores dos retângulos (formato BGR: Blue, Green, Red)
-const cv::Scalar COR_ROSTO(0, 255, 0);   // Verde
-const cv::Scalar COR_OLHOS(255, 0, 0);   // Azul
+const cv::Scalar COR_ROSTO(0, 255, 0);
+const cv::Scalar COR_OLHOS(255, 0, 0);
+const cv::Scalar COR_CENTRO(0, 255, 255);
 const int ESPESSURA_LINHA = 2;
+
+const int    SUAVIZACAO   = 8;
+const double SENSIBILIDADE = 3.0;
+
+
+// ============================================================
+//  CLASSE: FiltroDeSuavizacao
+// ============================================================
+class FiltroDeSuavizacao {
+public:
+    FiltroDeSuavizacao(int tamanho) : m_tamanho(tamanho) {}
+
+    cv::Point atualizar(int x, int y)
+    {
+        m_filax.push_back(x);
+        m_filay.push_back(y);
+
+        if ((int)m_filax.size() > m_tamanho) {
+            m_filax.pop_front();
+            m_filay.pop_front();
+        }
+
+        int somaX = std::accumulate(m_filax.begin(), m_filax.end(), 0);
+        int somaY = std::accumulate(m_filay.begin(), m_filay.end(), 0);
+        int n     = (int)m_filax.size();
+
+        return cv::Point(somaX / n, somaY / n);
+    }
+
+private:
+    int             m_tamanho;
+    std::deque<int> m_filax;
+    std::deque<int> m_filay;
+};
+
+
+// ============================================================
+//  FUNÇÃO: mapearValor
+// ============================================================
+int mapearValor(int valor,
+                int entradaMin, int entradaMax,
+                int saidaMin,   int saidaMax)
+{
+    if (entradaMax == entradaMin) return saidaMin;
+
+    double proporcao = (double)(valor - entradaMin) /
+                       (double)(entradaMax - entradaMin);
+
+    int resultado = saidaMin + (int)(proporcao * (saidaMax - saidaMin));
+
+    if (resultado < saidaMin) resultado = saidaMin;
+    if (resultado > saidaMax) resultado = saidaMax;
+
+    return resultado;
+}
+
+
+// ============================================================
+//  FUNÇÃO: desenharBarraDeStatus
+// ============================================================
+void desenharBarraDeStatus(cv::Mat& frame,
+                           const std::string& mensagem,
+                           cv::Scalar corTexto)
+{
+    int altura  = frame.rows;
+    int largura = frame.cols;
+
+    cv::rectangle(frame,
+                  cv::Point(0, altura - 35),
+                  cv::Point(largura, altura),
+                  cv::Scalar(0, 0, 0), cv::FILLED);
+
+    cv::putText(frame, mensagem,
+                cv::Point(10, altura - 12),
+                cv::FONT_HERSHEY_SIMPLEX, 0.5,
+                corTexto, 1);
+}
 
 
 // ============================================================
@@ -52,189 +139,291 @@ const int ESPESSURA_LINHA = 2;
 int main()
 {
     // --------------------------------------------------------
-    //  CORREÇÃO DE DLL — deve ser a primeira coisa no main()
+    //  Registra a função que trata Ctrl+C
     //
-    //  Problema: quando o colaborador tem o MSYS2 instalado
-    //  na máquina dele, o Windows pode carregar as DLLs da
-    //  instalação DELE em vez das DLLs da pasta do projeto.
-    //  Se as versões forem diferentes, o programa quebra.
-    //
-    //  Solução: SetDllDirectoryW() diz ao Windows para sempre
-    //  buscar DLLs na pasta do .exe PRIMEIRO, antes de
-    //  qualquer outra pasta do sistema ou do PATH.
-    //
-    //  Resultado: o programa usa SEMPRE as DLLs corretas
-    //  que estão junto com o .exe, em qualquer máquina.
+    //  signal(SIGINT, aoReceberCtrlC) diz ao sistema:
+    //  "quando receber Ctrl+C, chame aoReceberCtrlC()"
+    //  SIGINT = sinal de interrupção (Ctrl+C)
+    // --------------------------------------------------------
+    signal(SIGINT,  aoReceberCtrlC);
+    signal(SIGTERM, aoReceberCtrlC);  // também trata o "finalizar processo"
+
+
+    // --------------------------------------------------------
+    //  Força DLLs da pasta do .exe
     // --------------------------------------------------------
     WCHAR pastaExe[MAX_PATH];
-
-    // Obtém o caminho completo do .exe em execução
     GetModuleFileNameW(NULL, pastaExe, MAX_PATH);
-
-    // Remove o nome do arquivo, deixando só a pasta
-    // Ex: "C:\projeto\detector_facial.exe" → "C:\projeto"
     PathRemoveFileSpecW(pastaExe);
-
-    // Define essa pasta como prioridade para busca de DLLs
     SetDllDirectoryW(pastaExe);
 
-    // --------------------------------------------------------
-
-    std::cout << "Iniciando detector de rosto e olhos..." << std::endl;
-    std::cout << "Pressione ESC para sair." << std::endl;
-
 
     // --------------------------------------------------------
-    //  PASSO 1: Carregar os detectores (arquivos XML)
+    //  Resolução da tela
     // --------------------------------------------------------
+    const int LARGURA_TELA = GetSystemMetrics(SM_CXSCREEN);
+    const int ALTURA_TELA  = GetSystemMetrics(SM_CYSCREEN);
+
+    std::cout << "==========================================" << std::endl;
+    std::cout << "  Detector de Rosto + Controle do Mouse  " << std::endl;
+    std::cout << "==========================================" << std::endl;
+    std::cout << "[INFO] Resolucao da tela: "
+              << LARGURA_TELA << " x " << ALTURA_TELA << std::endl;
+    std::cout << "[INFO] Para sair: ESC, tecla Q, botao X da janela ou Ctrl+C"
+              << std::endl;
+
+
+    // --------------------------------------------------------
+    //  Carrega detectores
+    // --------------------------------------------------------
+    std::cout << "[INFO] Carregando detectores..." << std::endl;
 
     cv::CascadeClassifier detectorRosto;
     cv::CascadeClassifier detectorOlhos;
 
     if (!detectorRosto.load(ARQUIVO_ROSTO)) {
-        std::cerr << "ERRO: Arquivo nao encontrado: " << ARQUIVO_ROSTO << std::endl;
-        std::cerr << "Copie o arquivo .xml para a mesma pasta do programa." << std::endl;
+        std::cerr << "[ERRO] Arquivo nao encontrado: " << ARQUIVO_ROSTO << std::endl;
+        system("pause");
         return 1;
     }
+    std::cout << "[OK]   Detector de rosto carregado." << std::endl;
 
     if (!detectorOlhos.load(ARQUIVO_OLHOS)) {
-        std::cerr << "ERRO: Arquivo nao encontrado: " << ARQUIVO_OLHOS << std::endl;
-        std::cerr << "Copie o arquivo .xml para a mesma pasta do programa." << std::endl;
+        std::cerr << "[ERRO] Arquivo nao encontrado: " << ARQUIVO_OLHOS << std::endl;
+        system("pause");
         return 1;
     }
-
-    std::cout << "Detectores carregados com sucesso!" << std::endl;
+    std::cout << "[OK]   Detector de olhos carregado." << std::endl;
 
 
     // --------------------------------------------------------
-    //  PASSO 2: Abrir a câmera
+    //  Abre a câmera
     // --------------------------------------------------------
+    std::cout << "[INFO] Abrindo camera " << CAMERA_INDEX << "..." << std::endl;
 
     cv::VideoCapture camera(CAMERA_INDEX);
 
     if (!camera.isOpened()) {
-        std::cerr << "ERRO: Nao foi possivel abrir a camera." << std::endl;
-        std::cerr << "Verifique se a camera esta conectada e nao esta em uso." << std::endl;
+        std::cerr << "[ERRO] Nao foi possivel abrir a camera." << std::endl;
+        std::cerr << "[ERRO] Verifique se ela esta conectada e nao esta"
+                     " em uso (Teams, Zoom, etc)." << std::endl;
+        system("pause");
         return 1;
     }
 
-    std::cout << "Camera aberta com sucesso!" << std::endl;
+    const int LARGURA_CAMERA = (int)camera.get(cv::CAP_PROP_FRAME_WIDTH);
+    const int ALTURA_CAMERA  = (int)camera.get(cv::CAP_PROP_FRAME_HEIGHT);
+
+    std::cout << "[OK]   Camera aberta. Resolucao: "
+              << LARGURA_CAMERA << " x " << ALTURA_CAMERA << std::endl;
 
 
     // --------------------------------------------------------
-    //  PASSO 3: Loop principal — processa frame por frame
+    //  Cria a janela de preview
     // --------------------------------------------------------
+    const std::string NOME_JANELA = "Detector de Rosto | Q ou ESC para sair";
 
+    cv::namedWindow(NOME_JANELA, cv::WINDOW_AUTOSIZE);
+    cv::moveWindow(NOME_JANELA, 50, 50);
+
+    std::cout << "[OK]   Janela de preview criada." << std::endl;
+    std::cout << "[INFO] Sensibilidade: " << SENSIBILIDADE << "x" << std::endl;
+    std::cout << "------------------------------------------" << std::endl;
+
+
+    // --------------------------------------------------------
+    //  Calcula zona ativa da câmera (sensibilidade)
+    // --------------------------------------------------------
+    int centroX     = LARGURA_CAMERA / 2;
+    int centroY     = ALTURA_CAMERA  / 2;
+    int zonaX       = (int)(LARGURA_CAMERA / (2.0 * SENSIBILIDADE));
+    int zonaY       = (int)(ALTURA_CAMERA  / (2.0 * SENSIBILIDADE));
+    int entradaMinX = centroX - zonaX;
+    int entradaMaxX = centroX + zonaX;
+    int entradaMinY = centroY - zonaY;
+    int entradaMaxY = centroY + zonaY;
+
+
+    // --------------------------------------------------------
+    //  Filtro de suavização
+    // --------------------------------------------------------
+    FiltroDeSuavizacao filtro(SUAVIZACAO);
+
+
+    // --------------------------------------------------------
+    //  Loop principal
+    // --------------------------------------------------------
     cv::Mat frameColorido;
     cv::Mat frameCinza;
+    bool rostoDetectadoAntes = false;
 
-    while (true)
+    while (rodando)   // ← verifica a flag a cada iteração
     {
-        // -- a) Captura um frame da câmera -------------------
+        // Captura frame
         camera >> frameColorido;
-
         if (frameColorido.empty()) {
-            std::cerr << "AVISO: Frame vazio. Encerrando." << std::endl;
+            std::cerr << "[AVISO] Frame vazio. Encerrando." << std::endl;
             break;
         }
 
-        // Espelha a imagem (fica como olhar num espelho)
         cv::flip(frameColorido, frameColorido, 1);
-
-
-        // -- b) Converte para escala de cinza ----------------
         cv::cvtColor(frameColorido, frameCinza, cv::COLOR_BGR2GRAY);
         cv::equalizeHist(frameCinza, frameCinza);
 
-
-        // -- c) Detectar rostos ------------------------------
+        // Detecta rostos
         std::vector<cv::Rect> rostos;
         detectorRosto.detectMultiScale(
-            frameCinza,
-            rostos,
-            1.1,
-            5,
-            0,
-            cv::Size(80, 80)
+            frameCinza, rostos,
+            1.1, 5, 0, cv::Size(80, 80)
         );
 
-
-        // -- d) Para cada rosto encontrado -------------------
-        for (const cv::Rect& rosto : rostos)
+        if (rostos.empty())
         {
-            // Retângulo VERDE em volta do rosto
-            cv::rectangle(frameColorido, rosto, COR_ROSTO, ESPESSURA_LINHA);
+            desenharBarraDeStatus(frameColorido,
+                "Buscando rosto...  Posicione o rosto no centro da camera",
+                cv::Scalar(0, 200, 255));
 
-            // Recorta a região do rosto para buscar olhos
-            cv::Mat regiaoRosto = frameCinza(rosto);
+            if (rostoDetectadoAntes) {
+                std::cout << "[AVISO] Rosto perdido. Reposicione." << std::endl;
+                rostoDetectadoAntes = false;
+            }
+        }
+        else
+        {
+            // Maior rosto detectado
+            cv::Rect rostoMaior = rostos[0];
+            for (const cv::Rect& r : rostos) {
+                if (r.area() > rostoMaior.area()) rostoMaior = r;
+            }
 
-            // -- e) Detectar olhos dentro do rosto -----------
+            if (!rostoDetectadoAntes) {
+                std::cout << "[OK]   Rosto detectado. Controlando cursor." << std::endl;
+                rostoDetectadoAntes = true;
+            }
+
+            cv::rectangle(frameColorido, rostoMaior, COR_ROSTO, ESPESSURA_LINHA);
+
+            int centroRostoX = rostoMaior.x + rostoMaior.width  / 2;
+            int centroRostoY = rostoMaior.y + rostoMaior.height / 2;
+
+            cv::circle(frameColorido,
+                       cv::Point(centroRostoX, centroRostoY),
+                       5, COR_CENTRO, -1);
+
+            cv::Point pos = filtro.atualizar(centroRostoX, centroRostoY);
+
+            int cursorX = mapearValor(pos.x,
+                                      entradaMinX, entradaMaxX,
+                                      0, LARGURA_TELA);
+            int cursorY = mapearValor(pos.y,
+                                      entradaMinY, entradaMaxY,
+                                      0, ALTURA_TELA);
+
+            SetCursorPos(cursorX, cursorY);
+
+            // Zona ativa (retângulo cinza)
+            cv::rectangle(frameColorido,
+                          cv::Point(entradaMinX, entradaMinY),
+                          cv::Point(entradaMaxX, entradaMaxY),
+                          cv::Scalar(128, 128, 128), 1);
+
+            // Detecta olhos
+            cv::Mat regiaoRosto = frameCinza(rostoMaior);
             std::vector<cv::Rect> olhos;
             detectorOlhos.detectMultiScale(
-                regiaoRosto,
-                olhos,
-                1.1,
-                4,
-                0,
-                cv::Size(20, 20)
+                regiaoRosto, olhos,
+                1.1, 4, 0, cv::Size(20, 20)
             );
 
             int contadorOlhos = 0;
-
-            for (const cv::Rect& olho : olhos)
-            {
+            for (const cv::Rect& olho : olhos) {
                 if (contadorOlhos >= 2) break;
-
-                // Converte coordenadas locais do olho
-                // para coordenadas do frame completo
                 cv::Rect olhoNoFrame(
-                    rosto.x + olho.x,
-                    rosto.y + olho.y,
-                    olho.width,
-                    olho.height
+                    rostoMaior.x + olho.x,
+                    rostoMaior.y + olho.y,
+                    olho.width, olho.height
                 );
-
-                // Retângulo AZUL em volta do olho
-                cv::rectangle(frameColorido, olhoNoFrame, COR_OLHOS, ESPESSURA_LINHA);
-
+                cv::rectangle(frameColorido, olhoNoFrame,
+                              COR_OLHOS, ESPESSURA_LINHA);
                 contadorOlhos++;
             }
+
+            std::string info =
+                "Rosto: (" + std::to_string(centroRostoX) +
+                ", " + std::to_string(centroRostoY) + ")" +
+                "  Cursor: (" + std::to_string(cursorX) +
+                ", " + std::to_string(cursorY) + ")" +
+                "  Sens: " + std::to_string((int)SENSIBILIDADE) + "x";
+
+            desenharBarraDeStatus(frameColorido, info, cv::Scalar(0, 255, 0));
         }
 
+        // Faixa superior
+        cv::rectangle(frameColorido,
+                      cv::Point(0, 0),
+                      cv::Point(frameColorido.cols, 30),
+                      cv::Scalar(0, 0, 0), cv::FILLED);
 
-        // -- f) Mostra informações na tela -------------------
-        cv::putText(
-            frameColorido,
-            "Pressione ESC para sair",
-            cv::Point(10, 25),
-            cv::FONT_HERSHEY_SIMPLEX,
-            0.6,
-            cv::Scalar(200, 200, 200),
-            1
+        cv::putText(frameColorido,
+                    "Zona cinza = area ativa | Q ou ESC = sair",
+                    cv::Point(10, 20),
+                    cv::FONT_HERSHEY_SIMPLEX, 0.5,
+                    cv::Scalar(200, 200, 200), 1);
+
+        // Exibe o frame
+        cv::imshow(NOME_JANELA, frameColorido);
+
+
+        // ----------------------------------------------------
+        //  Verifica teclas E fechamento da janela
+        //
+        //  cv::waitKey(1): espera 1ms e retorna o código
+        //  da tecla pressionada. O "& 0xFF" isola apenas
+        //  os 8 bits menos significativos, o que garante
+        //  compatibilidade entre sistemas operacionais.
+        //
+        //  Aceitamos ESC (código 27) e Q (código 'q' ou 'Q')
+        //  para que o usuário possa sair mesmo sem foco
+        //  exato na janela (Q é mais fácil de pressionar).
+        // ----------------------------------------------------
+        int tecla = cv::waitKey(1) & 0xFF;
+
+        if (tecla == 27 || tecla == 'q' || tecla == 'Q') {
+            std::cout << "[INFO] Tecla de saida pressionada. Encerrando..."
+                      << std::endl;
+            rodando = false;
+        }
+
+        // ----------------------------------------------------
+        //  Verifica se o botão X da janela foi clicado
+        //
+        //  getWindowProperty retorna -1 se a janela foi
+        //  fechada pelo botão X. Isso evita o programa
+        //  continuar rodando sem janela visível.
+        // ----------------------------------------------------
+        double visivel = cv::getWindowProperty(
+            NOME_JANELA, cv::WND_PROP_VISIBLE
         );
 
-        std::string info = "Rostos: " + std::to_string(rostos.size());
-        cv::putText(frameColorido, info, cv::Point(10, 50),
-                    cv::FONT_HERSHEY_SIMPLEX, 0.6,
-                    cv::Scalar(0, 255, 0), 1);
-
-        // -- g) Exibe o frame --------------------------------
-        cv::imshow("Detector de Rosto e Olhos", frameColorido);
-
-        // -- h) ESC para sair --------------------------------
-        if (cv::waitKey(1) == 27) {
-            std::cout << "ESC pressionado. Encerrando..." << std::endl;
-            break;
+        if (visivel < 1) {
+            std::cout << "[INFO] Janela fechada pelo usuario. Encerrando..."
+                      << std::endl;
+            rodando = false;
         }
-    }
+
+    } // fim do loop
 
 
     // --------------------------------------------------------
-    //  PASSO 4: Liberar recursos
+    //  Limpeza de recursos
+    //
+    //  Sempre executado — seja por ESC, Q, X ou Ctrl+C.
+    //  Libera a câmera e fecha todas as janelas do OpenCV.
     // --------------------------------------------------------
+    std::cout << "[INFO] Liberando recursos..." << std::endl;
     camera.release();
     cv::destroyAllWindows();
+    std::cout << "[OK]   Programa encerrado com sucesso." << std::endl;
 
-    std::cout << "Programa encerrado." << std::endl;
     return 0;
 }

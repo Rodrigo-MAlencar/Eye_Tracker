@@ -15,7 +15,7 @@ Se você **só quer executar** o programa sem editar o código:
 
 1. Clone ou baixe o repositório
 2. Abra a pasta `eyetracker`
-3. Dê **duplo clique** em `detector_facial.exe`
+3. Dê duplo clique em `run.bat`
 
 Todos os arquivos necessários já estão incluídos no repositório.
 
